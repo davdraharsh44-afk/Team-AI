@@ -1,0 +1,2141 @@
+import streamlit as st
+import html
+import speech_recognition as sr
+import webbrowser
+import requests
+import threading
+import bcrypt
+import json
+from ddgs import DDGS
+import pdfplumber
+import sqlite3
+import re
+import smtplib
+import random
+from dotenv import load_dotenv
+import os
+from streamlit_oauth import OAuth2Component
+from PIL import Image
+from cryptography.fernet import Fernet
+import ollama
+import pyperclip
+import google.generativeai as genai
+import hashlib
+import time
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+import markdown
+from markdown.extensions.fenced_code import FencedCodeExtension
+from markdown.extensions.tables import TableExtension
+MAX_RESPONSE = 6000
+MAX_PROMPT_CHARS = 5000
+MAX_MEMORY_CHARS = 1500
+MAX_SUMMARY_CHARS = 2000
+MAX_CONTEXT_CHARS = 3000
+MAX_INTERNET_CHARS = 1200
+MODEL_NAME = "llama3:latest"
+# ================= APP CONSTANTS =================
+MODEL_NAME = "llama3:latest"
+
+MAX_CHAT_MESSAGES = 120
+MAX_USER_MESSAGE_CHARS = 4000
+MAX_FILE_SIZE = 5 * 1024 * 1024      # 5 MB
+
+LOGIN_LOCK_TIME = 300                # 5 minutes
+ACCOUNT_LOCK_TIME = 900              # 15 minutes
+
+OTP_EXPIRY = 300                     # 5 minutes
+OTP_RESEND_DELAY = 60                # 60 seconds
+OTP_WINDOW = 600                     # 10 minutes
+MAX_OTP_REQUESTS = 3
+
+AI_REQUEST_WINDOW = 60               # 1 minute
+MAX_AI_REQUESTS = 10
+
+SPAM_MESSAGE_DELAY = 3               # 3 seconds
+SPAM_BLOCK_TIME = 60                 # 60 seconds
+MAX_SPAM_WARNINGS = 5
+
+SESSION_TIMEOUT = 1800               # 30 minutes
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+genai.configure(api_key=GEMINI_API_KEY)
+
+gemini_model = genai.GenerativeModel("gemini-flash-latest")
+FERNET_KEY = os.getenv("FERNET_KEY")
+if not FERNET_KEY:
+    raise Exception("FERNET_KEY missing in .env")
+cipher = Fernet(FERNET_KEY.encode())
+# ✅ Create data folder if not exists
+if not os.path.exists("data"):
+    os.makedirs("data")
+st.set_page_config(page_title="Harsh AI Ultra Pro",page_icon="🤖",layout="wide",initial_sidebar_state="auto")
+# ================= SESSION =================
+if "ai_generating" not in st.session_state:
+    st.session_state.ai_generating = False
+if "login" not in st.session_state:
+    st.session_state.login = False
+if "register" not in st.session_state:
+    st.session_state.register = False
+if "email" not in st.session_state:
+    st.session_state.email = ""
+if "password" not in st.session_state:
+    st.session_state.password = ""
+if "chats" not in st.session_state:
+    st.session_state.chats = {"Chat 1": []}
+if "current_chat" not in st.session_state:
+    st.session_state.current_chat = "Chat 1"
+if "theme" not in st.session_state:
+    st.session_state.theme = "Pink"
+if "voice_enabled" not in st.session_state:
+    st.session_state.voice_enabled = True
+if "first_name" not in st.session_state:
+    st.session_state.first_name = ""
+if "profile_pic" not in st.session_state:
+    st.session_state.profile_pic = ""
+if "input" not in st.session_state:
+    st.session_state.input = ""
+if "input_key" not in st.session_state:
+    st.session_state.input_key = 0
+if "memory" not in st.session_state:
+    st.session_state.memory = []
+if "conversation_summary" not in st.session_state:
+    st.session_state.conversation_summary = ""
+if "personality" not in st.session_state:
+    st.session_state.personality = "Normal"
+if "remember_me" not in st.session_state:
+    st.session_state.remember_me = False
+if "forgot" not in st.session_state:
+    st.session_state.forgot = False
+if "otp" not in st.session_state:
+    st.session_state.otp = ""
+if "otp_verified" not in st.session_state:
+    st.session_state.otp_verified = False
+if "login_attempts" not in st.session_state:
+    st.session_state.login_attempts = 0
+if "lock_until" not in st.session_state:
+    st.session_state.lock_until = 0
+if "otp_time" not in st.session_state:
+    st.session_state.otp_time = 0
+if "otp_sent" not in st.session_state:
+    st.session_state.otp_sent = False
+if "stop_generation" not in st.session_state:
+    st.session_state.stop_generation = False
+if "last_msg_time" not in st.session_state:
+    st.session_state.last_msg_time = 0
+if "spam_count" not in st.session_state:
+    st.session_state.spam_count = 0
+if "spam_block_until" not in st.session_state:
+    st.session_state.spam_block_until = 0
+if "ai_request_count" not in st.session_state:
+    st.session_state.ai_request_count = 0
+if "ai_request_window" not in st.session_state:
+    st.session_state.ai_request_window = 0
+if "last_activity" not in st.session_state:
+    st.session_state.last_activity = time.time()
+if "session_token" not in st.session_state:
+    st.session_state.session_token = os.urandom(24).hex()
+def hash_token(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+def hash_otp(otp):
+    return hashlib.sha256(otp.encode()).hexdigest()
+def encrypt_text(text):
+    return cipher.encrypt(text.encode()).decode()
+def decrypt_text(text):
+    return cipher.decrypt(text.encode()).decode()
+if "google_login_started" not in st.session_state:
+    st.session_state.google_login_started = False
+if "uploaded_image" not in st.session_state:
+    st.session_state.uploaded_image = None
+if "last_uploaded_type" not in st.session_state:
+    st.session_state.last_uploaded_type = None
+if "pdf_text" not in st.session_state:
+    st.session_state.pdf_text = ""
+if "last_uploaded_filename" not in st.session_state:
+    st.session_state.last_uploaded_filename = ""
+if "internet_on" not in st.session_state:
+    st.session_state.internet_on = True
+if "pinned_chats" not in st.session_state:
+    st.session_state.pinned_chats = []
+if "otp_attempts" not in st.session_state:
+    st.session_state.otp_attempts = 0
+if "otp_send_count" not in st.session_state:
+    st.session_state.otp_send_count = 0
+if "otp_send_window" not in st.session_state:
+    st.session_state.otp_send_window = 0
+if "last_otp_sent_time" not in st.session_state:
+    st.session_state.last_otp_sent_time = 0
+# ================= THEMES =================
+themes = {"Pink": ("#FF4FD8", "#0f2027"),"Dark Cyan": ("#00FFD1", "#0E1117"),"Neon Green": ("#39FF14", "#000000"),"Royal Blue": ("#4F9DFF", "#1e3c72"),"Sunset": ("#FF7E5F", "#2c3e50"),"Purple Dream": ("#C77DFF", "#240046"),"Gold": ("#FFD700", "#1a1a1a"),"Red Fire": ("#FF3131", "#1b0000"),"Ocean": ("#00BFFF", "#000428"),"Lime": ("#A4FF00", "#111111"),"Teal": ("#00FFC6", "#0f2027"),"Orange Blast": ("#FF8C00", "#1a1a1a"),"White Minimal": ("#111111", "#ffffff")}
+def apply_theme():
+    main_color, bg = themes[st.session_state.theme]
+
+    st.markdown(f"""<style>               
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+*{{
+font-family:'Poppins',sans-serif;
+}}
+/* Markdown Styling */
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3{{
+margin-top:10px;
+margin-bottom:10px;
+font-weight:700;
+}}
+.markdown-body code{{
+background:#111827;
+padding:2px 6px;
+border-radius:6px;
+color:#00ffcc;
+}}
+.markdown-body pre{{
+background:#0f172a;
+padding:16px;
+border-radius:14px;
+overflow-x:auto;
+border:1px solid #1e293b;
+margin-top:10px;
+margin-bottom:10px;
+}}
+.markdown-body pre code{{
+background:transparent !important;
+color:#ffffff !important;
+font-size:14px;
+line-height:1.6;
+}}
+.markdown-body code{{
+background:#111827;
+padding:3px 7px;
+border-radius:6px;
+color:#00ffcc;
+font-size:14px;
+}}
+.markdown-body ul{{
+padding-left:20px;
+}}
+.markdown-body table{{
+width:100%;
+border-collapse:collapse;
+margin-top:10px;
+}}
+.markdown-body th,
+.markdown-body td{{
+border:1px solid #ccc;
+padding:8px;
+}}
+/* FIX TOP HEADER */
+header[data-testid="stHeader"] {{
+    background: #e5e7eb !important;
+    color: black !important;
+    border-bottom: 1px solid #cbd5e1;
+}}
+/* FIX TOOLBAR */
+div[data-testid="stToolbar"] {{
+    background: #e5e7eb !important;
+    border-radius: 10px;
+    padding: 5px;
+}}
+/* Background */
+body{{
+background: linear-gradient(-45deg,#0f172a,#1e293b,#020617,#111827);
+background-size:400% 400%;
+animation:gradientBG 15s ease infinite;
+font-family:'Poppins',sans-serif;
+}}
+/* Main App */
+.stApp{{
+background: transparent;
+}}
+section[data-testid="stSidebar"]{{
+background:#ffffff !important;
+backdrop-filter:blur(16px);
+border-right:1px solid #d1d5db;
+padding-top:10px;
+}}
+/* Sidebar Search Box */
+section[data-testid="stSidebar"] input{{
+background:white !important;
+color:black !important;
+border:2px solid black !important;
+border-radius:12px !important;
+padding:10px !important;
+}}
+/* Placeholder */
+section[data-testid="stSidebar"] input::placeholder{{
+color:#666666 !important;
+}}              
+/* Sidebar Buttons */
+section[data-testid="stSidebar"] button{{
+border-radius:14px !important;
+transition:0.2s ease;
+border:none !important;
+}}
+section[data-testid="stSidebar"] button:hover{{
+transform:translateX(5px);
+background:linear-gradient(90deg,#2563eb,#7c3aed) !important;
+}}
+/* Title */
+.main-title{{
+text-align:center;
+font-size:42px;
+font-weight:800;
+background:linear-gradient(90deg,#60a5fa,#a855f7,#ec4899);
+-webkit-background-clip:text;
+-webkit-text-fill-color:transparent;
+margin-bottom:8px;
+animation:fadeIn 1s ease;
+}}
+/* 🔥 INPUT FIX */
+input, textarea{{
+background:white !important;
+color:black !important;
+border:2px solid #cbd5e1 !important;
+border-radius:18px !important;
+padding:12px !important;
+}}
+/* Placeholder */
+textarea::placeholder{{
+color:#666666 !important;
+}}
+/* Labels */
+label {{
+    color: {main_color} !important;
+    font-weight: 600;
+}}
+/* Checkbox */
+.stCheckbox label {{
+    color: {main_color} !important;
+}}
+/* Buttons */
+button{{
+border:none !important;
+border-radius:16px !important;
+background:linear-gradient(135deg,#2563eb,#7c3aed) !important;
+color:white !important;
+font-weight:600 !important;
+transition:0.25s ease;
+box-shadow:0 6px 18px rgba(37,99,235,0.25);
+}}
+button:hover{{
+transform:translateY(-2px) scale(1.02);
+box-shadow:0 10px 24px rgba(124,58,237,0.35);
+}}
+.chat-user{{
+background:linear-gradient(135deg,#2563eb,#1d4ed8);
+color:white;
+padding:14px 18px;
+border-radius:22px 22px 4px 22px;
+margin:4px 0;
+margin-left:auto;
+max-width:75%;
+font-size:15px;
+box-shadow:0 8px 20px rgba(37,99,235,0.3);
+animation:fadeIn 0.3s ease;
+backdrop-filter:blur(12px);
+}}
+.chat-ai{{
+background:#ffffff;
+color:#000000;
+padding:14px 18px;
+border-radius:22px 22px 22px 4px;
+margin:4px 0;
+max-width:75%;
+font-size:15px;
+border:1px solid #d1d5db;
+backdrop-filter:blur(14px);
+box-shadow:0 8px 30px rgba(0,0,0,0.12);
+animation:fadeIn 0.3s ease;
+display:inline-block;
+line-height:1.6;
+white-space:pre-wrap;
+word-wrap:break-word;
+overflow-wrap:anywhere;
+}}
+/* Streaming Cursor */
+.cursor-blink{{
+animation:blink 1s infinite;
+font-weight:bold;
+}}
+@keyframes blink{{
+0%{{opacity:1;}}
+50%{{opacity:0;}}
+100%{{opacity:1;}}
+}}
+/* Animation */
+@keyframes fadeIn{{
+from{{
+opacity:0;
+transform:translateY(10px);
+}}
+to{{
+opacity:1;
+transform:translateY(0);
+}}
+}}
+/* Animations */
+@keyframes gradientBG {{
+0% {{background-position:0% 50%;}}
+50% {{background-position:100% 50%;}}
+100% {{background-position:0% 50%;}}
+}}
+/* Scroll */
+::-webkit-scrollbar {{
+width:6px;
+}}
+::-webkit-scrollbar-thumb {{
+background:{main_color};
+border-radius:10px;
+}}
+hr {{display: none !important;}}
+</style>""", unsafe_allow_html=True)
+st.markdown("""
+<style>
+/* ✅ KEEP LAPTOP UI PERFECT */
+.block-container{
+max-width:1200px;
+margin:auto;
+padding-top:1rem !important;
+padding-bottom:5rem !important;
+}
+/* Desktop */
+.chat-user,
+.chat-ai{
+max-width:70%;
+word-wrap:break-word;
+overflow-wrap:anywhere;
+white-space:pre-wrap;
+}
+/* MOBILE ONLY */
+@media screen and (max-width:768px){
+/* Main spacing */
+.block-container{
+padding-left:8px !important;
+padding-right:8px !important;
+padding-top:0.5rem !important;
+padding-bottom:7rem !important;
+}
+/* Title */
+.main-title{
+font-size:24px !important;
+line-height:1.3 !important;
+margin-top:10px !important;
+}
+/* Chat bubbles */
+.chat-user,
+.chat-ai{
+max-width:95% !important;
+font-size:14px !important;
+padding:12px !important;
+border-radius:18px !important;
+line-height:1.5 !important;
+}
+/* AI bubble */
+.chat-ai{
+margin-left:2px !important;
+}
+/* User bubble */
+.chat-user{
+margin-right:2px !important;
+}
+/* Input textarea */
+textarea{
+font-size:16px !important;
+border-radius:16px !important;
+padding:12px !important;
+min-height:60px !important;
+}
+/* Buttons */
+button{
+height:44px !important;
+border-radius:14px !important;
+font-size:14px !important;
+}
+/* Sidebar */
+section[data-testid="stSidebar"]{
+width:85% !important;
+}
+/* Uploaded image */
+img{
+border-radius:16px !important;
+}
+/* Code blocks */
+pre{
+font-size:13px !important;
+border-radius:14px !important;
+overflow-x:auto !important;
+}
+/* Tables */
+table{
+font-size:12px !important;
+}
+/* Reduce top gap */
+[data-testid="stHeader"]{
+height:50px !important;
+}
+/* Bottom input area */
+.input-box{
+position:fixed !important;
+bottom:0 !important;
+left:0 !important;
+right:0 !important;
+padding:10px !important;
+background:rgba(15,23,42,0.95) !important;
+backdrop-filter:blur(12px) !important;
+border-top:1px solid rgba(255,255,255,0.1);
+z-index:9999 !important;
+}
+/* Chat container */
+.chat-container{
+padding-bottom:140px !important;
+}
+/* Make columns compact */
+[data-testid="column"]{
+padding:2px !important;
+}
+}
+/* TABLET */
+@media screen and (min-width:769px) and (max-width:1024px){
+.chat-user,
+.chat-ai{
+max-width:80% !important;
+}
+}
+</style>
+""", unsafe_allow_html=True)
+apply_theme()
+def render_markdown_live(text):
+    try:
+        html_output = markdown.markdown(
+            text,
+            extensions=[
+                FencedCodeExtension(),
+                TableExtension(),
+                "nl2br"
+            ]
+        )
+        return html_output
+    except Exception:
+        return html.escape(text)
+# ================= DATABASE =================
+conn = sqlite3.connect("users.db", check_same_thread=False)
+conn.execute("PRAGMA synchronous=NORMAL;")
+conn.execute("PRAGMA temp_store=MEMORY;")
+c = conn.cursor()
+c.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    email TEXT PRIMARY KEY,
+    password TEXT,
+    first_name TEXT,
+    last_name TEXT,
+    auth_type TEXT
+)
+""")
+c.execute("""
+CREATE TABLE IF NOT EXISTS login_attempts (
+    email TEXT PRIMARY KEY,
+    attempts INTEGER DEFAULT 0,
+    lock_until INTEGER DEFAULT 0
+)
+""")
+conn.commit()
+c.execute("""
+CREATE TABLE IF NOT EXISTS remembered_sessions (
+    email TEXT,
+    session_token TEXT UNIQUE,
+    created_at INTEGER
+)
+""")
+c.execute("""
+CREATE TABLE IF NOT EXISTS otp_codes (
+    email TEXT,
+    otp_hash TEXT,
+    expiry INTEGER
+)
+""")
+conn.commit()
+def get_user_db(email):
+    safe_email = email.replace("@", "_").replace(".", "_")
+    path = f"data/{safe_email}.db"
+    # ✅ fresh connection every time
+    conn = sqlite3.connect(path, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    c = conn.cursor()
+    # Chat table
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS chat_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_name TEXT,
+        sender TEXT,
+        message TEXT
+    )
+    """)
+    # Memory table
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS memory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        note TEXT
+    )
+    """)
+    # Conversation summary table
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        summary TEXT
+    )
+    """)
+    # Pinned chats table
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS pinned_chats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_name TEXT
+    )
+    """)
+    conn.commit()
+    return conn, c
+# ✅ SAVE CHAT
+def save_chat(email, chat_name, sender, message):
+    conn, c = get_user_db(email)
+    encrypted_message = encrypt_text(message)
+    c.execute(
+        "INSERT INTO chat_history (chat_name, sender, message) VALUES (?, ?, ?)",
+        (
+            chat_name,
+            sender,
+            encrypted_message
+        )
+    )
+    conn.commit()
+    conn.close()
+def rename_chat_in_db(email, old_name, new_name):
+    new_name = re.sub(r'[^A-Za-z0-9 _-]', '', new_name)
+    new_name = new_name[:30]
+    conn, c = get_user_db(email)
+    c.execute(
+        "UPDATE chat_history SET chat_name=? WHERE chat_name=?",
+        (new_name, old_name)
+    )
+    conn.commit()
+    conn.close()
+# ✅ LOAD CHAT
+def load_chat(email, chat_name):
+    conn, c = get_user_db(email)
+    c.execute("""
+    SELECT sender, message 
+    FROM chat_history 
+    WHERE chat_name=? 
+    ORDER BY id ASC
+    """, (chat_name,))
+    data = c.fetchall()
+    decrypted_data = []
+    for sender, message in data:
+        try:
+            message = decrypt_text(message)
+        except Exception as e:
+            print("Decrypt Error:", e)
+        decrypted_data.append((sender,message))
+    data = decrypted_data
+    conn.close()
+    return data
+def rewrite_chat(email, chat_name, messages):
+    conn, c = get_user_db(email)
+    c.execute("DELETE FROM chat_history WHERE chat_name=?",(chat_name,))
+    for sender, message in messages:
+        encrypted_message = encrypt_text(message)
+        c.execute("INSERT INTO chat_history (chat_name, sender, message) VALUES (?, ?, ?)",(chat_name, sender, encrypted_message))
+    conn.commit()
+    conn.close()
+# ✅ SAVE MEMORY
+def save_memory(email, note):
+    conn, c = get_user_db(email)
+    encrypted_note = encrypt_text(note)
+    c.execute(
+        "INSERT INTO memory (note) VALUES (?)",
+        (encrypted_note,)
+    )
+    conn.commit()
+    conn.close()
+# ✅ SAVE SUMMARY
+def save_summary(email, summary):
+    conn, c = get_user_db(email)
+    c.execute("DELETE FROM summaries")
+    c.execute(
+        "INSERT INTO summaries (summary) VALUES (?)",
+        (summary,)
+    )
+    conn.commit()
+    conn.close()
+# ✅ LOAD SUMMARY
+def load_summary(email):
+    conn, c = get_user_db(email)
+    c.execute("SELECT summary FROM summaries ORDER BY id DESC LIMIT 1")
+    data = c.fetchone()
+    conn.close()
+    if data:
+        return data[0]
+    return ""
+# ✅ LOAD MEMORY
+def load_memory(email):
+    conn, c = get_user_db(email)
+    c.execute("SELECT note FROM memory")
+    data = []
+    for row in c.fetchall():
+        try:
+            data.append(decrypt_text(row[0]))
+        except:
+            pass
+    conn.close()
+    return data
+# ✅ SAVE PINNED CHAT
+def save_pinned_chat(email, chat_name):
+    conn, c = get_user_db(email)
+    # duplicate avoid
+    c.execute(
+        "SELECT * FROM pinned_chats WHERE chat_name=?",
+        (chat_name,)
+    )
+    existing = c.fetchone()
+    if not existing:
+        c.execute(
+            "INSERT INTO pinned_chats (chat_name) VALUES (?)",
+            (chat_name,)
+        )
+    conn.commit()
+    conn.close()
+# ✅ REMOVE PINNED CHAT
+def remove_pinned_chat(email, chat_name):
+    conn, c = get_user_db(email)
+    c.execute(
+        "DELETE FROM pinned_chats WHERE chat_name=?",
+        (chat_name,)
+    )
+    conn.commit()
+    conn.close()
+# ✅ LOAD PINNED CHATS
+def load_pinned_chats(email):
+    conn, c = get_user_db(email)
+    c.execute("SELECT chat_name FROM pinned_chats")
+    data = [row[0] for row in c.fetchall()]
+    conn.close()
+    return data
+# ================= SMART MEMORY =================
+def smart_save_memory(email, message):
+    existing = load_memory(email)
+    # duplicate protection
+    for mem in existing:
+        if message.lower().strip() == mem.lower().strip():
+            return False
+    # 🔒 Memory limit
+    if len(existing) >= 200:
+        return False
+    save_memory(email, message)
+    return True
+# ================= AI MEMORY EXTRACTOR =================
+def extract_memory_with_ai(user_message):
+    try:
+        prompt = f"""
+Extract important long-term memory from this message.
+Message:
+{user_message}
+Rules:
+- Only keep useful personal information
+- Ignore temporary chat
+- Keep memories short
+- One memory per line
+- Examples:
+User likes cricket
+User name is Harsh
+User studies engineering
+Memories:
+"""
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": MODEL_NAME,
+                "prompt": prompt,
+                "stream": False,
+                "temperature": 0.3
+            },
+            timeout=60
+        )
+        data = response.json()
+        memory_text = data.get("response", "").strip()
+        if not memory_text:
+            return []
+        memories = [
+            m.strip()
+            for m in memory_text.split("\n")
+            if m.strip()
+        ]
+        return memories
+    except Exception as e:
+        print("Memory Extract Error:", e)
+        return []
+def get_all_chat_names(email):
+    conn, c = get_user_db(email)
+    c.execute("SELECT DISTINCT chat_name FROM chat_history")
+    chats = [row[0] for row in c.fetchall()]
+    conn.close()
+    return chats
+# ================= VOICE =================
+def speak_safe(text):
+    if len(text) > 1000:
+        text = text[:1000]
+    def run():
+        try:
+            import pyttsx3
+            engine = pyttsx3.init()
+            engine.setProperty('rate', 170)
+            engine.say(text)
+            engine.runAndWait()
+            engine.stop()
+        except Exception as e:
+            print("Voice Error:", e)
+    threading.Thread(target=run, daemon=True).start()
+def listen():
+    r = sr.Recognizer()
+    try:
+        with sr.Microphone() as source:
+            st.info("🎤 Listening...")
+            # Background noise adjust
+            r.adjust_for_ambient_noise(source, duration=1)
+            # Listen with limits
+            audio = r.listen(source, timeout=7, phrase_time_limit=12)
+            # Try English
+            try:
+                return r.recognize_google(audio, language="en-IN")
+            except Exception as e:
+                print("English Voice Error:", e)
+            # Try Hindi
+            try:
+                return r.recognize_google(audio, language="hi-IN")
+            except Exception as e:
+                print("Hindi Voice Error:", e)
+            # Try Gujarati
+            try:
+                return r.recognize_google(audio, language="gu-IN")
+            except Exception as e:
+                print("Gujarati Voice Error:", e)
+            return "Sorry, I did not understand"
+    except sr.WaitTimeoutError:
+        return "No voice detected"
+    except Exception:
+        return "Microphone error"    
+def send_otp_email(receiver_email, otp):
+    try:
+        sender_email = os.getenv("EMAIL")
+        sender_password = os.getenv("PASSWORD")
+        
+        subject = "Your OTP Code"
+        message = f"Subject: {subject}\n\nYour OTP is: {otp}"
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        if not sender_email or not sender_password:
+            raise Exception("EMAIL or PASSWORD missing in .env")
+        server.login(sender_email, sender_password)
+        server.sendmail(sender_email,receiver_email,message)
+        server.quit()
+        return True
+    except Exception as e:
+        print("OTP EMAIL ERROR:", e)
+        return False
+# ================= SECURE AUTO LOGIN =================
+if not st.session_state.login:
+    current_token = hash_token(st.session_state.session_token)
+    c.execute(
+        """
+        SELECT email
+        FROM remembered_sessions
+        WHERE session_token=?
+        AND created_at > ?
+        """,(current_token,int(time.time()) - (30 * 24 * 60 * 60)))
+    remembered_user = c.fetchone()
+    if remembered_user:
+        saved_email = remembered_user[0]
+        c.execute("SELECT * FROM users WHERE email=?",(saved_email,))
+        user = c.fetchone()
+        if user:
+            st.session_state.first_name = user[2]
+            st.session_state.login = True
+            st.session_state.email = saved_email
+            all_chats = get_all_chat_names(saved_email)
+            if not all_chats:
+                st.session_state.chats = {"Chat 1": []}
+            else:
+                st.session_state.chats = {}
+                for chat in all_chats:
+                    st.session_state.chats[chat] = load_chat(saved_email, chat)
+            st.session_state.current_chat = list(st.session_state.chats.keys())[0]
+            st.session_state.memory = load_memory(saved_email)
+            st.session_state.conversation_summary = load_summary(saved_email)
+            st.session_state.pinned_chats = load_pinned_chats(saved_email)
+# ================= LOGIN =================
+if not st.session_state.login and not st.session_state.register and not st.session_state.forgot:
+    st.markdown('<p class="main-title">🤖 Harsh AI Ultra Pro</p>', unsafe_allow_html=True)
+    email = st.text_input("Enter Gmail")
+    show_password = st.checkbox("👁 Show Password")
+    remember = st.checkbox("Remember Me")
+    if show_password:
+        password = st.text_input("Enter Password")
+    else:
+        password = st.text_input("Enter Password", type="password")
+    def is_valid_email(email):
+        return re.match(r"[^@]+@[^@]+\.[^@]+", email)
+    # ================= NORMAL LOGIN =================
+    if st.button("Login / Register"):
+        if time.time() < st.session_state.lock_until:
+            remaining = int(st.session_state.lock_until - time.time())
+            st.error(f"🚫 Too many attempts. Try again after {remaining} seconds.")
+            st.stop()
+        if st.session_state.login_attempts >= 5:
+            st.error("🚫 Too many attempts. Please wait.")
+            st.stop()
+        email = email.strip().lower()
+        if not email or not password:
+            st.error("❌ Please enter email and password")
+        elif not is_valid_email(email):
+            st.error("❌ Enter valid email")
+        elif (len(password) < 10 or not re.search(r"[A-Z]", password) or not re.search(r"[a-z]", password)  or not re.search(r"[0-9]", password) or not re.search(r"[!@#$%^&*]", password)):
+            st.error("❌ Password must contain uppercase letter and number")
+        else:
+            c.execute("SELECT attempts, lock_until FROM login_attempts WHERE email=?",(email,))
+            lock_row = c.fetchone()
+            if lock_row:
+                attempts, lock_until = lock_row
+                if lock_until > int(time.time()):
+                    remaining = int((lock_until - int(time.time())) / 60) + 1
+                    st.error(f"🚫 Account locked. Try again in {remaining} minutes.")
+                    st.stop()
+            c.execute("SELECT * FROM users WHERE email=?",(email,))
+            user = c.fetchone()
+            if not user:
+                st.warning("⚠️ Email not registered. Please register first.")
+                st.session_state.email = email
+                st.session_state.password = password
+                st.session_state.register = True
+            else:
+                stored_password = user[1]
+                auth_type = user[4] if len(user) > 4 else "normal"
+                if auth_type == "google":
+                    st.error("❌ Please login using Google button")
+                elif bcrypt.checkpw(password.encode(),stored_password.encode()):
+                    st.session_state.login_attempts = 0
+                    st.session_state.first_name = user[2]
+                    c.execute("DELETE FROM login_attempts WHERE email=?",(email,))
+                    conn.commit()
+                    st.session_state.login = True
+                    st.session_state.session_token = os.urandom(24).hex()
+                    st.session_state.email = email
+                    st.session_state.internet_on = True
+                    all_chats = get_all_chat_names(email)
+                    if not all_chats:
+                        st.session_state.chats = {"Chat 1": []}
+                    else:
+                        st.session_state.chats = {}
+                        for chat in all_chats:
+                            st.session_state.chats[chat] = load_chat(email, chat)
+                    st.session_state.current_chat = list(st.session_state.chats.keys())[0]
+                    st.session_state.memory = load_memory(email)
+                    st.session_state.conversation_summary = load_summary(email)
+                    st.session_state.pinned_chats = load_pinned_chats(email)
+                    if remember:
+                        c.execute("DELETE FROM remembered_sessions WHERE email=?",(email,))
+                        hashed_token = hash_token(st.session_state.session_token)
+                        c.execute("INSERT INTO remembered_sessions VALUES (?, ?, ?)",(email,hashed_token,int(time.time())))
+                        conn.commit()
+                    st.success("✅ Login Successful")
+                    st.rerun()
+                else:
+                    c.execute("SELECT attempts FROM login_attempts WHERE email=?",(email,))
+                    row = c.fetchone()
+                    if row:
+                        attempts = row[0] + 1
+                    else:
+                        attempts = 1
+                    if attempts >= 5:
+                        c.execute(
+                            """
+                            INSERT OR REPLACE INTO login_attempts
+                            VALUES (?, ?, ?)
+                            """,(email,attempts,int(time.time()) + ACCOUNT_LOCK_TIME))
+                        conn.commit()
+                        st.error("🚫 Too many failed attempts. Account locked for 15 minutes.")
+                    else:
+                        c.execute(
+                            """
+                            INSERT OR REPLACE INTO login_attempts
+                            VALUES (?, ?, ?)
+                            """,(email,attempts,0))
+                        conn.commit()
+                    st.session_state.login_attempts += 1
+                    if st.session_state.login_attempts >= 5:
+                        st.session_state.lock_until = time.time() + LOGIN_LOCK_TIME
+                        st.error("🚫 Account locked for 5 minutes.")
+                    else:
+                        st.error(f"❌ Wrong Password ({st.session_state.login_attempts}/5)")
+    # ================= GOOGLE LOGIN =================
+    CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+    CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+    REDIRECT_URI = os.getenv("REDIRECT_URI")
+    oauth2 = OAuth2Component(
+        CLIENT_ID,
+        CLIENT_SECRET,
+        "https://accounts.google.com/o/oauth2/auth",
+        "https://oauth2.googleapis.com/token",
+    )
+    try:
+        result = oauth2.authorize_button(name="🔵 Login with Google",icon="https://www.google.com/favicon.ico",redirect_uri=REDIRECT_URI,scope="openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile",key="google_login",extras_params={"prompt": "select_account"},)
+    except Exception as e:
+        if "STATE" in str(e):
+            st.warning("⚠️ Google session expired. Please click login again.")
+            st.stop()
+        else:
+            st.error(f"Google Login Error: {str(e)}")
+            st.stop()
+    if result:
+        st.session_state.google_login_started = True
+    if result and "token" in result:
+        token = result["token"]
+        id_token_jwt = token.get("id_token")
+        if id_token_jwt:
+            try:
+                # 🔒 VERIFY TOKEN WITH GOOGLE
+                idinfo = id_token.verify_oauth2_token(id_token_jwt,google_requests.Request(),CLIENT_ID,clock_skew_in_seconds=10)
+                if not idinfo.get("email_verified"):
+                    st.error("❌ Google email not verified")
+                    st.stop()
+                # ✅ VERIFIED USER INFO
+                email = idinfo.get("email")
+                name = idinfo.get("name", "User")
+                picture = idinfo.get("picture", "")
+                if picture and not picture.startswith("https://"):
+                    picture = ""
+                if not picture:
+                    picture = "https://via.placeholder.com/80"
+            except Exception as e:
+                st.error(f"❌ Google Verify Error: {str(e)}")
+                st.stop()
+            st.session_state.login = True
+            st.session_state.session_token = os.urandom(24).hex()
+            st.session_state.email = email
+            st.session_state.first_name = name
+            st.session_state.profile_pic = picture
+            st.session_state.internet_on = True
+            # ✅ LOAD CHATS AFTER GOOGLE LOGIN
+            all_chats = get_all_chat_names(email)
+            if not all_chats:
+                st.session_state.chats = {"Chat 1": []}
+            else:
+                st.session_state.chats = {}
+                for chat in all_chats:
+                    st.session_state.chats[chat] = load_chat(email, chat)
+            st.session_state.current_chat = list(st.session_state.chats.keys())[0]
+            st.session_state.memory = load_memory(email)
+            st.session_state.conversation_summary = load_summary(email)
+            st.session_state.pinned_chats = load_pinned_chats(email)
+            # DB check
+            c.execute("SELECT * FROM users WHERE email=?", (email,))
+            user = c.fetchone()
+            if not user:
+                c.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?)", (email,"",name,"","google"))
+                conn.commit()
+            st.success(f"✅ Logged in as {email}")
+            st.rerun()
+        else:
+            st.error("❌ ID Token not found")
+    elif result:
+        st.error("❌ Access token not found")
+    # ================= FORGOT PASSWORD =================
+    if st.button("Forgot Password?"):
+        st.session_state.forgot = True
+elif st.session_state.register:
+    st.markdown('<p class="main-title">Enter Your Name</p>', unsafe_allow_html=True)
+    first = st.text_input("First Name")
+    last = st.text_input("Last Name")
+    if st.button("Submit"):
+        if not first.strip() or not last.strip():
+            st.error("❌ Enter valid name")
+            st.stop()
+        email = st.session_state.email.strip().lower()
+        # 🔍 Check email already exists
+        c.execute("SELECT * FROM users WHERE email=?", (st.session_state.email,))
+        existing_user = c.fetchone()
+        if existing_user:
+            st.error("❌ Email already exists")
+        else:
+            # 🔐 Hash password
+            hashed_password = bcrypt.hashpw(st.session_state.password.encode(),bcrypt.gensalt(rounds=12)).decode()
+            # 💾 Save to database
+            c.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?)", (st.session_state.email,hashed_password,first,last,"normal"))
+            conn.commit()
+            # ✅ Auto login
+            st.session_state.first_name = first
+            st.session_state.login = True
+            st.session_state.session_token = os.urandom(24).hex()
+            st.session_state.register = False
+            st.success("✅ Registration Successful")
+            st.rerun()
+elif st.session_state.forgot:
+    st.markdown('<p class="main-title">Reset Password</p>', unsafe_allow_html=True)
+    reset_email = st.text_input("Enter your email")
+    new_password = st.text_input("Enter new password", type="password")
+    entered_otp = st.text_input("Enter OTP")
+    if st.button("Send OTP"):
+        current_time = time.time()
+        if current_time - st.session_state.otp_send_window > OTP_WINDOW:
+            st.session_state.otp_send_count = 0
+            st.session_state.otp_send_window = current_time
+        if st.session_state.otp_send_count >= MAX_OTP_REQUESTS:
+            st.error("🚫 Maximum 3 OTP requests allowed in 10 minutes.")
+            st.stop()
+        if not reset_email:
+            st.error("❌ Enter email first")
+        else:
+            # ✅ check email exists
+            c.execute("SELECT * FROM users WHERE email=?", (reset_email,))
+            user = c.fetchone()
+            if not user:
+                st.error("❌ Email not registered")
+            else:
+                otp = str(random.randint(100000, 999999))
+                st.session_state.otp_send_count += 1
+                otp_hash = hash_otp(otp)
+                c.execute("DELETE FROM otp_codes WHERE email=?",(reset_email,))
+                c.execute("INSERT INTO otp_codes VALUES (?, ?, ?)",(reset_email,otp_hash,int(time.time()) + OTP_EXPIRY))
+                conn.commit()
+                st.session_state.otp_time = time.time()
+                st.session_state.otp_sent = True
+                email_sent = send_otp_email(reset_email, otp)
+                st.session_state.last_otp_sent_time = time.time()
+                if email_sent:
+                    st.success(f"✅ OTP sent to {reset_email}")
+                else:
+                    st.error("❌ Failed to send OTP email")
+    if st.session_state.otp_sent:
+        if st.button("Resend OTP"):
+            current_time = time.time()
+            if current_time - st.session_state.last_otp_sent_time < OTP_RESEND_DELAY:
+                remaining = int(OTP_RESEND_DELAY - (current_time - st.session_state.last_otp_sent_time))
+                st.error(f"⏳ Please wait {remaining} seconds before requesting another OTP.")
+                st.stop()
+            otp = str(random.randint(100000, 999999))
+            otp_hash = hash_otp(otp)
+            c.execute("DELETE FROM otp_codes WHERE email=?",(reset_email,))
+            c.execute("INSERT INTO otp_codes VALUES (?, ?, ?)",(reset_email,otp_hash,int(time.time()) + 300))
+            conn.commit()
+            st.session_state.otp_time = time.time()
+            email_sent = send_otp_email(reset_email,otp)
+            st.session_state.last_otp_sent_time = current_time
+            if email_sent:
+                st.success("🔁 New OTP sent!")
+            else:
+                st.error("❌ Failed to resend OTP")
+    if st.button("Reset Password"):
+        c.execute("SELECT otp_hash, expiry FROM otp_codes WHERE email=?",(reset_email,))
+        otp_row = c.fetchone()
+        if not reset_email or not new_password or not entered_otp:
+            st.error("❌ Fill all fields")
+
+        elif (not otp_row or otp_row[1] < int(time.time()) or otp_row[0] != hash_otp(entered_otp)):
+            st.session_state.otp_attempts += 1
+            if st.session_state.otp_attempts >= 5:
+                st.error("🚫 Too many OTP attempts.")
+                st.stop()
+            st.error(f"❌ Invalid OTP ({st.session_state.otp_attempts}/5)")
+        elif (len(new_password) < 10 or not re.search(r"[A-Z]", new_password) or not re.search(r"[a-z]", new_password) or not re.search(r"[0-9]", new_password) or not re.search(r"[!@#$%^&*]", new_password)):
+            st.error("❌ Password must contain uppercase, lowercase, number and symbol")
+        else:
+            c.execute("SELECT * FROM users WHERE email=?", (reset_email,))
+            user = c.fetchone()
+            if user:
+                hashed_password = bcrypt.hashpw(new_password.encode(),bcrypt.gensalt(rounds=12)).decode()
+                c.execute("UPDATE users SET password=? WHERE email=?", (hashed_password, reset_email))
+                conn.commit()
+                st.success("✅ Password updated successfully")
+                st.session_state.otp_attempts = 0
+                st.session_state.otp_sent = False
+                st.session_state.otp_time = 0
+                # reset states
+                st.session_state.forgot = False
+                c.execute("DELETE FROM otp_codes WHERE email=?",(reset_email,))
+                conn.commit()
+            else:
+                st.error("❌ Email not found")
+# ================= MAIN APP =================
+# 🔒 Auto session timeout (30 min)
+if (st.session_state.login and time.time() - st.session_state.last_activity > SESSION_TIMEOUT):
+    st.session_state.clear()
+    st.session_state.login = False
+    st.warning("⏳ Session expired. Please login again.")
+    st.rerun()
+
+if st.session_state.login:
+    with st.sidebar:
+    # 🔥 MULTI CHAT UI START
+        st.markdown("## 💬 Chats")
+        st.markdown("""
+        <style>
+        div[data-testid="stTextInput"] input{
+            height:35px;
+            font-size:14px;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        search = st.text_input(
+            "Search chats",
+            placeholder="🔍 Search chats...",
+            key="chat_search",
+            label_visibility="collapsed"
+        )
+        # ➕ New Chat
+        if st.button("➕ New Chat"):
+            i = 1
+            while f"Chat {i}" in st.session_state.chats:
+                i += 1
+            new_name = f"Chat {i}"
+            st.session_state.chats[new_name] = []
+            st.session_state.current_chat = new_name
+            # OPTIONAL: remove if you don't want default message
+            # save_chat(st.session_state.email, new_name, "system", "Chat created")
+        # 📂 Chat List
+        sorted_chats = (st.session_state.pinned_chats + [c for c in st.session_state.chats.keys() if c not in st.session_state.pinned_chats])
+        for chat_name in sorted_chats.copy():
+            # 🔍 Search filter
+            if search.lower() not in chat_name.lower():
+                continue
+            col1, col2, col3 = st.columns([4,1,1])
+            with col1:
+                if st.button(chat_name, key=chat_name):
+                    st.session_state.current_chat = chat_name
+                    loaded_chat = load_chat(st.session_state.email, chat_name)
+                    st.session_state.chats[chat_name] = loaded_chat if loaded_chat else []
+                    st.rerun()
+                # ✏️ Rename button
+                if st.button("✏️", key=f"rename_btn_{chat_name}"):
+                    st.session_state.rename_target = chat_name
+            with col2:
+                pin_icon = "📌" if chat_name not in st.session_state.pinned_chats else "❌"
+                if st.button(pin_icon, key=f"pin_{chat_name}"):
+                    # UNPIN
+                    if chat_name in st.session_state.pinned_chats:
+                        st.session_state.pinned_chats.remove(chat_name)
+                        remove_pinned_chat(st.session_state.email,chat_name)
+                    # PIN
+                    else:
+                        st.session_state.pinned_chats.append(chat_name)
+                        save_pinned_chat(st.session_state.email,chat_name)
+                    st.rerun()
+            with col3:
+                if st.button("❌", key=f"del_{chat_name}"):
+                    if len(st.session_state.chats) > 1:
+                        # 🔥 delete from DB
+                        conn_user, c_user = get_user_db(st.session_state.email)
+                        c_user.execute("DELETE FROM chat_history WHERE chat_name=?",(chat_name,))
+                        conn_user.commit()
+                        conn_user.close()
+                        # remove from pinned if pinned
+                        if chat_name in st.session_state.pinned_chats:
+                            st.session_state.pinned_chats.remove(chat_name)
+                            remove_pinned_chat(st.session_state.email,chat_name)
+                        # 🔥 delete from UI
+                        del st.session_state.chats[chat_name]
+                        st.session_state.current_chat = list(st.session_state.chats.keys())[0]
+                        st.rerun()
+        # 🔥 Rename Input (only shows when clicked)
+        if "rename_target" in st.session_state:
+            st.markdown("### ✏️ Rename Chat")
+            new_name = st.text_input("Enter new name")
+            if st.button("✅ Save New Name"):
+                if new_name.strip():
+                    new_name = new_name.strip()
+                    if len(new_name) > 20:
+                        st.error("❌ Maximum 20 characters allowed")
+                        st.stop()
+                    if new_name in st.session_state.chats:
+                        st.error("❌ Chat name already exists")
+                        st.stop()
+                    old_name = st.session_state.rename_target
+                    new_name = new_name[:20]
+                    # DB update
+                    rename_chat_in_db(st.session_state.email, old_name, new_name)
+                    # UI update safely
+                    st.session_state.chats[new_name] = st.session_state.chats.pop(old_name)
+                    st.session_state.current_chat = new_name
+                    # update pinned chat name
+                    if old_name in st.session_state.pinned_chats:
+                        st.session_state.pinned_chats.remove(old_name)
+                        st.session_state.pinned_chats.append(new_name)
+                        remove_pinned_chat(st.session_state.email,old_name)
+                        save_pinned_chat(st.session_state.email,new_name)
+                    del st.session_state.rename_target
+                    st.rerun()
+        st.markdown("---")
+        # 🔽 OLD CODE CONTINUES
+        st.write("👨‍💻 Developer: Harsh")
+        st.write("🚀 Version: Ultra Pro v1")
+        
+        uploaded_file = st.file_uploader("📂 Upload File",type=["txt", "pdf", "png", "jpg", "jpeg"])
+        file_type = ""
+        if uploaded_file is not None:
+            file_type = uploaded_file.name.split(".")[-1].lower()
+        # 🔥 flag create
+        if "file_processed" not in st.session_state:
+            st.session_state.file_processed = False
+        if uploaded_file is not None:
+            # 🔒 File size limit (5MB)
+            if uploaded_file.size > MAX_FILE_SIZE:
+                st.error("❌ File too large! Max 5MB allowed.")
+                st.stop()
+            # ✅ detect new file
+            if uploaded_file.name != st.session_state.last_uploaded_filename:
+                st.session_state.file_processed = False
+                st.session_state.pdf_text = ""
+                st.session_state.uploaded_image = None
+                st.session_state.last_uploaded_filename = uploaded_file.name
+            if uploaded_file is not None and not st.session_state.file_processed:
+                content = ""
+                file_type = uploaded_file.name.split(".")[-1].lower()
+                allowed_mime = ["text/plain","application/pdf","image/png","image/jpeg"]
+                if uploaded_file.type not in allowed_mime:
+                    st.error("❌ Invalid file type detected")
+                    st.stop()
+                content = ""
+            # ✅ IMAGE FILE
+            if file_type in ["png", "jpg", "jpeg"]:
+                try:
+                    image = Image.open(uploaded_file)
+                    image.verify()
+                    uploaded_file.seek(0)
+                    image = Image.open(uploaded_file)
+                    st.image(image, caption="Uploaded Image", width="stretch")
+                    st.session_state.uploaded_image = uploaded_file.getvalue()
+                    st.session_state.last_uploaded_type = "image"
+                except Exception:
+                    st.error("❌ Invalid image")
+                    st.stop()
+            # ✅ TXT file
+            elif file_type == "txt":
+                st.session_state.last_uploaded_type = "txt"
+                try:
+                    content = uploaded_file.read().decode("utf-8", errors="ignore")
+                except Exception as e:
+                    print("TXT Read Error:", e)
+                    content = "Error reading TXT file"
+            # ✅ PDF file
+            elif file_type == "pdf":
+                st.session_state.last_uploaded_type = "pdf"
+                try:
+                    content = ""
+                    with pdfplumber.open(uploaded_file) as pdf:
+                        if not pdf.pages:
+                            content = "⚠️ No pages found in PDF"
+                        for page in pdf.pages:
+                            if len(content) > 5000:
+                                break
+                            try:
+                                text = page.extract_text()
+                                if not text:
+                                    text = ""
+                                if text:
+                                    content += text + "\n"
+                            except Exception as e:
+                                print(e)
+                    if not content.strip():
+                        content = "⚠️ No readable text found (maybe scanned PDF)"
+                    st.session_state.pdf_text = content
+                except Exception as e:
+                    content = f"❌ PDF Error: {str(e)}"
+            else:
+                content = "Unsupported file type"
+            if "content" not in locals():
+                content = ""
+            content = content[:5000]
+            st.success("✅ File/Image uploaded successfully!")
+            st.session_state.file_processed = True
+        # 🔥 reset when no file
+        if uploaded_file is None:
+            st.session_state.file_processed = False
+        st.markdown("### 🧠 Commands")
+        st.title("⚙ Settings")
+        personality = st.selectbox("🧠 AI Personality",["Normal", "Funny", "Teacher", "Professional"])
+        st.session_state.personality = personality
+        st.session_state.internet_on = st.checkbox("🌐 Internet Access", value=True)
+        selected_theme = st.selectbox("🎨 Select Theme", list(themes.keys()))
+        if (selected_theme != st.session_state.theme and st.session_state.login):
+            st.session_state.theme = selected_theme
+            st.rerun()
+        st.session_state.voice_enabled = st.checkbox( "🔊 Voice Output", value=st.session_state.voice_enabled)
+        if st.button("🗑 Clear All Chat History"):
+            conn_user, c_user = get_user_db(st.session_state.email)
+            c_user.execute("DELETE FROM chat_history")
+            conn_user.commit()
+            conn_user.close()
+            st.session_state.chats = {"Chat 1": []}
+            st.session_state.current_chat = "Chat 1"
+            st.success("Your chat deleted!")
+        if st.button("🚪 Logout"):
+            old_token = hash_token(st.session_state.get("session_token", ""))
+            st.session_state.clear()
+            st.session_state.login = False
+            st.session_state.chats = {"Chat 1": []}
+            st.session_state.current_chat = "Chat 1"
+            st.session_state.stop_generation = False
+            st.session_state.ai_generating = False
+            c.execute(
+                "DELETE FROM remembered_sessions WHERE session_token=?",
+                (old_token,))
+            conn.commit()
+            st.success("👋 Logged out successfully")
+            st.rerun()
+    st.markdown(f"""
+<p class='main-title'>
+🔥 Welcome {st.session_state.first_name} 🚀
+</p>
+<p style='text-align:center; color:#000000; font-size:14px; font-weight:600;'>
+📧 Logged in as: {st.session_state.email}
+</p>
+""", unsafe_allow_html=True)
+    if (st.session_state.profile_pic and st.session_state.profile_pic.startswith("https://")):
+        safe_pic = html.escape(st.session_state.profile_pic)
+        st.markdown(f"""
+        <div style="text-align:center; margin-top:10px;">
+            <img src="{safe_pic}" 
+            style="width:80px; height:80px; border-radius:50%; border:2px solid white;">
+        </div>
+        """, unsafe_allow_html=True)
+    # ================= CONVERSATION SUMMARY =================
+    def generate_conversation_summary(messages):
+        try:
+            text = ""
+            for sender, msg in messages:
+                text += f"{sender}: {msg}\n"
+            prompt = f"""
+    Summarize this conversation briefly.
+    Rules:
+    - Keep important information only
+    - Keep user preferences
+    - Keep important tasks
+    - Keep context
+    - Maximum 15 lines
+    - Short and clean
+    Conversation:
+    {text}
+    Summary:
+    """
+            response = requests.post("http://localhost:11434/api/generate",json={"model": MODEL_NAME,"prompt": prompt,"stream": False,"temperature": 0.4},timeout=120)
+            data = response.json()
+            summary = data.get("response", "").strip()
+            return summary
+        except Exception as e:
+            print("Summary Error:", e)
+            return ""
+    # ================= AUTO CHAT TITLE =================
+    def generate_chat_title(user_message):
+        try:
+            prompt = f"""
+            Generate a smart chat title.
+            Conversation:
+            {user_message}
+            Rules:
+            - Maximum 5 words
+            - Meaningful title
+            - Based on topic
+            - No quotes
+            - No punctuation
+            - No explanation
+
+            Examples:
+            Python Login System
+            Machine Learning Basics
+            India Cricket News
+            Streamlit Chatbot Project
+            HTML CSS Form Design
+
+            Return title only.
+            Title:
+            """
+            response = requests.post("http://localhost:11434/api/generate",json={"model": MODEL_NAME,"prompt": prompt,"stream": False,"temperature": 0.2},timeout=120)
+            data = response.json()
+            title = data.get("response", "New Chat").strip()
+            bad_titles = ["chat","new chat","conversation","title","untitled","hello","hi"]
+            if title.lower() in bad_titles:
+                title = "Smart Chat"
+            # cleanup
+            title = title.replace("\n", "").replace('"', "")
+            # max length
+            title = title[:40]
+            title = html.escape(title)
+            title = re.sub(r'[^A-Za-z0-9 Gujaratiઅ-હ ]', '', title)
+            if not title:
+                title = "New Chat"
+            return title
+        except Exception as e:
+            print("Chat Title Error:", e)
+            words = user_message.split()
+            if len(words) >= 3:
+                return " ".join(words[:3])
+            return "Smart Chat"
+        
+    def ask_gemini(prompt):
+        try:
+            response = gemini_model.generate_content(prompt)
+
+            if response.text:
+                return response.text
+
+            return "No response."
+
+        except Exception as e:
+            print(e)
+            raise
+        
+    def search_internet(query):
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query,region="in-en",safesearch="off",timelimit="d",max_results=8))
+            text = ""
+            for r in results:
+                title = r.get("title", "")
+                body = r.get("body", "")
+                href = r.get("href", "")
+                text += f"""
+    Title: {title}
+    Content: {body}
+    Source: {href}
+    """
+            return text[:4000]
+        except Exception as e:
+            return ""
+        
+    
+        
+    
+        
+    def ask_ai_ollama(prompt):
+        p = prompt.lower().strip()
+        coding_keywords = ["python","java","c","c++","c#",
+            "javascript","html","css",
+            "react","node","sql",
+            "streamlit","flask","django",
+            "function","class","array",
+            "linked list","stack","queue",
+            "tree","graph","algorithm",
+            "bug","error","code","program","api","website","app","calculator",
+            "login","signup","database",
+            "frontend","backend","bug",
+            "debug","fix","script"]
+        selected_model = MODEL_NAME
+        temperature = 0.1
+
+        # 🌐 Internet ON hoy to Gemini use karo
+        if st.session_state.internet_on:
+            try:
+                answer = ask_gemini(prompt)
+                yield answer
+                return
+            except:
+                pass
+
+        if any(k in p for k in coding_keywords):
+            selected_model = MODEL_NAME
+            temperature = 0.05
+
+        cipher_keywords = [
+            "caesar cipher",
+            "vigenere cipher",
+            "playfair cipher",
+            "rail fence",
+            "hill cipher",
+            "affine cipher",
+            "cipher text",
+            "encrypt",
+            "decrypt"
+        ]
+
+        if any(k in p for k in cipher_keywords):
+            prompt = f"""
+        You are a cryptography expert.
+
+        Rules:
+        - Solve step by step.
+        - Show calculations.
+        - Verify final answer before responding.
+        - Return exact ciphertext/plaintext.
+        - Never guess.
+
+        Question:
+        {prompt}
+
+        Answer:
+        """
+        # ================= IMAGE ANALYSIS =================
+        image_keywords = ["image","photo","picture","screenshot","see image","this image","solve from image","question in image","analyse image","read image"]
+        if (st.session_state.uploaded_image is not None and any(word in p for word in image_keywords)):
+            try:
+                image_bytes = st.session_state.uploaded_image
+                if len(image_bytes) > 5_000_000:
+                    yield "❌ Image too large. Please upload smaller image."
+                    return
+                response = ollama.chat(model='llava:latest',messages=[{'role': 'user','content': prompt,'images': [image_bytes]}])
+                answer = response['message']['content']
+                yield answer
+                return
+            except Exception as e:
+                yield f"❌ Image AI Error: {str(e)}"
+                return
+        # ================= PDF ANALYSIS =================
+        pdf_keywords = ["pdf","document","file","notes","summarize","summary","explain pdf","from pdf","this pdf","uploaded pdf","in pdf","according to pdf"]
+        if (st.session_state.pdf_text.strip() != ""and st.session_state.last_uploaded_type == "pdf"and any(k in p for k in pdf_keywords)):
+            short_pdf = st.session_state.pdf_text[:3000]
+            pdf_prompt = f"""
+        You are reading a PDF/document.
+        PDF Content:
+        {short_pdf}
+        User Question:
+        {prompt}
+        Rules:
+        - Answer ONLY from PDF content
+        - Do not make up information
+        - Give direct and accurate answer
+        - If exact answer not found say:
+        'Answer not found in PDF'
+        - Keep answer short and clean
+        - Use simple language
+        Answer:
+        """
+            try:
+                response = requests.post("http://localhost:11434/api/generate",json={"model": selected_model,"prompt": pdf_prompt,"stream": True,"temperature": temperature},stream=True,timeout=(30, 300))
+                full_response = ""
+                for line in response.iter_lines():
+                    if st.session_state.stop_generation:
+                        response.close()
+                        return
+                    if line:
+                        data = line.decode("utf-8")
+                        try:
+                            json_data = json.loads(data)
+                            if "response" in json_data:
+                                chunk = json_data["response"]
+                                yield chunk
+                        except Exception as e:
+                            print("PDF Stream Parse Error:", e)
+                return
+            except Exception as e:
+                yield f"❌ PDF AI Error: {str(e)}"
+                return
+        action_words = ["write", "create", "generate", "build", "make","code","program"]
+        education_keywords = ["example","program","python","java","c","c++","javascript","html","css"]
+        is_coding_query = any(k in p for k in coding_keywords)
+        if is_coding_query:
+            prompt = f"""
+        You are an expert programming assistant.
+
+        Rules:
+        - Give complete working code.
+        - Give the simplest solution.
+        - Do not generate GUI unless requested."
+        - Do not generate Tkinter unless requested.
+        - If user asks only code, return only code.
+        - Add explanation only when useful.
+        - Follow best coding practices.
+
+        User Request:
+        {prompt}
+        """
+        if p.startswith("play "):
+            query = p.replace("play", "").strip()
+            url = f"https://www.youtube.com/results?search_query={query}"
+            webbrowser.open(url)
+            yield f"▶ Playing {query}"
+            return
+        # ================= APP COMMANDS =================
+        if p.startswith("open "):
+            site = p.replace("open ", "").strip()
+            if "." not in site:
+                url = f"https://www.{site}.com"
+            else:
+                url = f"https://{site}"
+            webbrowser.open(url)
+            yield f"✅ Opened {site}"
+            return
+        current_chat_data = st.session_state.chats[st.session_state.current_chat]
+        last_messages = current_chat_data[-6:]
+        internet_data = ""
+        # 🌐 SEARCH ONLY WHEN NEEDED
+        if st.session_state.get("internet_on", True):
+            if len(prompt) < 100:
+                internet_query = prompt
+                internet_data = search_internet(internet_query)
+            else:
+                internet_data = ""
+            
+        internet_data = str(internet_data)[:1500]
+        context = ""
+        for sender, msg in last_messages:
+            short_msg = str(msg)[:300]
+            context += f"{sender}: {short_msg}\n"
+        context = context[:MAX_CONTEXT_CHARS]
+        memory_text = "\n".join(str(m)[:100]
+            for m in st.session_state.memory[-2:]
+        )
+        memory_text = memory_text[:MAX_MEMORY_CHARS]
+        summary_text = str(st.session_state.conversation_summary)[:500]
+        personality_text = {
+            "Funny":
+            """
+            Be humorous and entertaining.
+            Add light jokes when appropriate.
+            Do not joke during serious topics.
+            """,
+            "Teacher":
+            """
+            Explain step by step.
+            Use simple language.
+            Give examples when useful.
+            Teach clearly.
+            """,
+            "Professional":
+            """
+            Give detailed professional answers.
+            Be structured.
+            Use bullet points when useful.
+            """,
+            "Normal":
+            """
+            Be natural, helpful and intelligent.
+            """
+        }       
+        blocked_ai_patterns = ["ignore previous instructions","system prompt","reveal hidden","developer mode","bypass rules"]
+        for pattern in blocked_ai_patterns:
+            if pattern in prompt.lower():
+                yield "❌ Unsafe prompt detected."
+                return
+        full_prompt = f"""
+        You are Harsh AI Ultra Pro.
+
+        Your goal:
+        - Give accurate answers.
+        - Never invent facts.
+        - Use internet information when available.
+        - Use memory only when relevant.
+        - Answer exactly what the user asks.
+        - If unsure, say "I don't know."
+
+        Always understand the user's intent first.
+
+        For coding:
+        Provide correct code.
+
+        For learning:
+        Teach clearly.
+
+        For casual conversation:
+        Be friendly.
+
+        For professional topics:
+        Be detailed and accurate.
+        Personality:
+        {personality_text.get(st.session_state.personality, "")}
+        Memory:
+        {memory_text}
+        Recent Conversation:
+        {context}
+        Internet Data:
+        {internet_data}
+        Conversation Summary:
+        {summary_text}
+        User Question:
+        {prompt[:1500]}
+        Rules:
+
+        - Reply in the same language as the user.
+        - Answer exactly what the user asks.
+        - Never invent facts.
+        - Never guess information.
+        - If you do not know the answer, say "I don't know."
+        - If information is uncertain, mention that it is uncertain.
+        - Prefer internet information when available.
+        - Prefer newer information over older information.
+        - Ignore memory if it conflicts with internet information.
+        - Use memory only when relevant.
+        - Use previous conversation only when relevant.
+        - Stay focused on the user's question.
+        - Keep answers short for simple questions.
+        - Give detailed explanations for learning questions.
+        - For coding:
+            - Give working code.
+            - Avoid syntax errors.
+            - Explain only if needed.
+        - Never create fake data, fake news, or fake facts.
+
+        AI:
+        """
+        # 🔒 HARD PROMPT LIMIT
+        full_prompt = full_prompt[:MAX_PROMPT_CHARS]
+        try:
+            response = requests.post("http://localhost:11434/api/generate",json={"model": selected_model,"prompt": full_prompt,"stream": True,"temperature": 0.1},headers={"Connection": "keep-alive"},stream=True,timeout=(30, 600))       
+            full_response = ""
+            for line in response.iter_lines():
+                # ✅ STOP BUTTON
+                if st.session_state.stop_generation:
+                    response.close()
+                    return
+                if line:
+                    data = line.decode("utf-8")
+                    try:
+                        json_data = json.loads(data)
+                        if "response" in json_data:
+                            chunk = json_data["response"]
+                            yield chunk
+                    except json.JSONDecodeError as e:
+                        print("JSON Error:", e)
+        except GeneratorExit:
+            raise
+        except Exception as e:
+            print("OLLAMA ERROR:", e)
+            yield f"⚠ AI Error: {str(e)}"
+    # ================= TYPING EFFECT =================
+    current_chat = st.session_state.chats[st.session_state.current_chat]
+    if (current_chat and current_chat[-1][1] == "Typing... ⏳" and not st.session_state.ai_generating):
+        last_user_msg = st.session_state.get("regen_prompt") or st.session_state.chats[st.session_state.current_chat][-2][1]
+        st.session_state.regen_prompt = None
+        response_placeholder = st.empty()
+        st.info("🤖 AI Thinking...")
+        full_text = ""
+        st.session_state.ai_generating = True
+        try:
+                display_text = ""
+                for chunk in ask_ai_ollama(last_user_msg):
+                    if st.session_state.stop_generation:
+                        break
+                    # only new streamed text
+                    if chunk:
+                        display_text += chunk
+                        if len(display_text) > MAX_RESPONSE:
+                            break
+                    safe_stream = html.escape(display_text)
+                    response_placeholder.markdown(f"""<div class="chat-ai">{safe_stream}<span class="cursor-blink">▌</span></div>""",unsafe_allow_html=True)
+                full_text = display_text
+                final_html = render_markdown_live(full_text)
+                response_placeholder.markdown(f"""<div class="chat-ai markdown-body">{final_html}</div>""",unsafe_allow_html=True)
+        except RuntimeError:
+                pass
+        st.markdown("""<script>ar chatContainer = document.querySelector('.chat-container');if(chatContainer){chatContainer.scrollTop = chatContainer.scrollHeight;}</script>""", unsafe_allow_html=True)
+        if st.session_state.stop_generation and not full_text.strip():
+            full_text = "⛔ Response stopped."
+        st.session_state.chats[st.session_state.current_chat][-1] = ("AI", full_text)
+        # ================= AUTO CHAT TITLE AFTER AI =================
+        current_chat_name = st.session_state.current_chat
+        chat_messages = st.session_state.chats[current_chat_name]
+        # only first full conversation
+        if current_chat_name.startswith("Chat") and len(chat_messages) >= 2:
+            conversation_for_title = ""
+            for sender, msg in chat_messages[:4]:
+                conversation_for_title += f"{sender}: {msg}\n"
+            title_prompt = conversation_for_title
+            new_title = generate_chat_title(title_prompt)
+            # avoid duplicate names
+            original_title = new_title
+            count = 1
+            while new_title in st.session_state.chats:
+                new_title = f"{original_title} {count}"
+                count += 1
+            # rename session
+            st.session_state.chats[new_title] = st.session_state.chats.pop(current_chat_name)
+            # rename DB
+            rename_chat_in_db(st.session_state.email,current_chat_name,new_title)
+            st.session_state.current_chat = new_title
+        if full_text.strip():
+            if full_text.strip():
+                save_chat(st.session_state.email,st.session_state.current_chat,"AI",full_text)
+            # ================= AUTO CONVERSATION SUMMARY =================
+            chat_data = st.session_state.chats[st.session_state.current_chat]
+            # every 20 messages
+            if len(chat_data) >= 20:
+                old_messages = chat_data[:-10]
+                summary = generate_conversation_summary(old_messages)
+                if summary:
+                    st.session_state.conversation_summary = summary
+                    save_summary(st.session_state.email,summary)
+                    # keep only recent messages
+                    st.session_state.chats[st.session_state.current_chat] = chat_data[-10:]
+                    rewrite_chat(st.session_state.email,st.session_state.current_chat,st.session_state.chats[st.session_state.current_chat])
+        if st.session_state.voice_enabled:
+            speak_safe(full_text)
+        st.session_state.ai_generating = False
+        try:
+            response.close()
+        except NameError:
+            pass
+        except Exception as e:
+            print("Response Close Error:", e)
+        st.rerun()
+    # Show Chat
+    st.markdown("""<style>.chat-container{padding-bottom:120px;}</style>""", unsafe_allow_html=True)
+    st.markdown('<div class="chat-container">', unsafe_allow_html=True)
+    for i, (sender, msg) in enumerate(st.session_state.chats[st.session_state.current_chat]):
+        col1, col2 = st.columns([8, 1])
+        # LEFT SIDE (message)
+        with col1:
+            if sender == "You":
+                st.markdown(
+                    f"""
+                    <div style="display:flex; justify-content:flex-end; align-items:center;">
+                        <div class="chat-user">{html.escape(msg)}</div>
+                        <div style="font-size:22px; margin-left:8px;">👤</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True)
+                # ✏️ Edit button
+                if st.button("✏️", key=f"edit_{i}"):
+                    st.session_state.edit_index = i
+                    st.session_state.edit_text = msg
+            else:
+                if msg == "Typing... ⏳":
+                    st.markdown(
+                        """
+                        <div style="display:flex; align-items:center;">
+                            <div style="font-size:22px; margin-right:8px;">🤖</div>
+                            <style>
+                            .typing{
+                            display:flex;
+                            gap:6px;
+                            padding:10px 14px;
+                            background:rgba(255,255,255,0.08);
+                            border-radius:16px;
+                            width:max-content;
+                            }
+                            .typing span{
+                            width:10px;
+                            height:10px;
+                            background:white;
+                            border-radius:50%;
+                            animation:bounce 1.2s infinite;
+                            }
+                            .typing span:nth-child(2){
+                            animation-delay:0.2s;
+                            }
+                            .typing span:nth-child(3){
+                            animation-delay:0.4s;
+                            }
+                            @keyframes bounce{
+                            0%,80%,100%{
+                            transform:scale(0.7);
+                            opacity:0.5;
+                            }
+                            40%{
+                            transform:scale(1);
+                            opacity:1;
+                            }
+                            }
+                            </style>
+                            <div class="typing">
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )   
+                else:
+                    if "```python" in msg:
+                        clean_code = msg.replace("```python", "").replace("```", "").strip()
+                        st.code(clean_code, language="python")
+                    elif "```" in msg:
+                        clean_code = msg.replace("```", "").strip()
+                        st.code(clean_code)
+                    else:
+                        with st.container():
+                            safe_msg = render_markdown_live(msg)
+                            with st.container():
+                                st.markdown(f"""<div class="chat-ai markdown-body">{safe_msg}</div>""",unsafe_allow_html=True)
+                        # 🔄 Regenerate Button
+                        if i == len(st.session_state.chats[st.session_state.current_chat]) - 1 and sender == "AI":
+                            if st.button("🔄 Regenerate", key=f"regen_{i}"):
+                                for j in range(i-1, -1, -1):
+                                    if st.session_state.chats[st.session_state.current_chat][j][0] == "You":
+                                        last_user = st.session_state.chats[st.session_state.current_chat][j][1]
+                                        break
+                                st.session_state.chats[st.session_state.current_chat].pop(i)
+                                st.session_state.stop_generation = False
+                                st.session_state.chats[st.session_state.current_chat].append(("AI", "Typing... ⏳"))
+                                st.session_state.regen_prompt = last_user
+                                st.rerun() 
+        # 🔥 Edit UI
+        if "edit_index" in st.session_state:
+            st.markdown("### ✏️ Edit Message")
+            new_text = st.text_area("Edit your message",value=st.session_state.edit_text,key="edit_box")
+            if st.button("✅ Save Edit", key="save_edit_btn"):
+                idx = st.session_state.edit_index
+                # update message
+                st.session_state.chats[st.session_state.current_chat][idx] = ("You", new_text)
+                # remove messages after edit
+                st.session_state.chats[st.session_state.current_chat] = st.session_state.chats[st.session_state.current_chat][:idx+1]
+                rewrite_chat(st.session_state.email,st.session_state.current_chat,st.session_state.chats[st.session_state.current_chat])
+                # add AI typing
+                st.session_state.chats[st.session_state.current_chat].append(("AI", "Typing... ⏳"))
+                del st.session_state.edit_index
+                st.rerun()
+        # RIGHT SIDE (delete button)
+        with col2:
+            if st.button("❌", key=f"del_{i}"):
+                st.session_state.chats[st.session_state.current_chat].pop(i)
+                rewrite_chat(st.session_state.email,st.session_state.current_chat,st.session_state.chats[st.session_state.current_chat])
+                st.rerun()
+    st.markdown("""</div>
+    <script>
+    var chatContainer = document.querySelector('.chat-container');
+    if(chatContainer){chatContainer.scrollTop = chatContainer.scrollHeight;}
+    </script>
+    """, unsafe_allow_html=True)
+    # Download
+    from reportlab.platypus import SimpleDocTemplate, Paragraph
+    from reportlab.lib.styles import getSampleStyleSheet
+    if st.button("📄 Download as PDF"):
+        pdf_path = "chat.pdf"
+        doc = SimpleDocTemplate(pdf_path)
+        styles = getSampleStyleSheet()
+        content = []
+        for sender, msg in st.session_state.chats[st.session_state.current_chat]:
+            text = f"<b>{sender}:</b> {msg}"
+            content.append(Paragraph(text, styles["Normal"]))
+        doc.build(content)
+        with open(pdf_path, "rb") as f:
+            st.download_button("⬇ Download PDF", f, file_name="chat.pdf")
+    # ================= INPUT + VOICE SAME LINE =================
+    st.markdown("""
+    <style>
+    .input-box{
+    position:sticky;
+    bottom:0;
+    background:transparent;
+    padding:10px;
+    border-radius:20px;
+    backdrop-filter:blur(16px);
+    z-index:999;
+    }
+    /* MOBILE FLOATING INPUT */
+    @media screen and (max-width:768px){
+    .input-box{
+    position:fixed !important;
+    bottom:10px !important;
+    left:10px !important;
+    right:10px !important;
+    padding:10px !important;
+    background:rgba(15,23,42,0.92) !important;
+    backdrop-filter:blur(18px) !important;
+    border-radius:22px !important;
+    box-shadow:0 8px 30px rgba(0,0,0,0.35);
+    z-index:99999 !important;
+    }
+    /* Textarea */
+    .input-box textarea{
+    border-radius:18px !important;
+    padding-right:60px !important;
+    min-height:55px !important;
+    font-size:15px !important;
+    }
+    /* Send button */
+    .input-box button{
+    height:48px !important;
+    border-radius:50% !important;
+    width:48px !important;
+    min-width:48px !important;
+    padding:0 !important;
+    font-size:18px !important;
+    display:flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    }
+    /* Chat bottom spacing */
+    .chat-container{
+    padding-bottom:160px !important;
+    }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    st.markdown('<div class="input-box">', unsafe_allow_html=True)
+    col1, col2 = st.columns([7,1])
+    with col1:
+        def handle_submit():
+            key = f"user_input_{st.session_state.input_key}"
+            text = st.session_state.get(key, "")
+            text = text.strip()[:MAX_USER_MESSAGE_CHARS]
+            current_time = time.time()
+            if current_time - st.session_state.ai_request_window > AI_REQUEST_WINDOW:
+                st.session_state.ai_request_count = 0
+                st.session_state.ai_request_window = current_time
+            if st.session_state.ai_request_count >= MAX_AI_REQUESTS:
+                st.error("🚫 AI request limit reached. Wait 1 minute.")
+                return
+            st.session_state.ai_request_count += 1
+            if current_time < st.session_state.spam_block_until:
+                remaining = int(st.session_state.spam_block_until - current_time)
+                st.error(f"🚫 Too many messages. Wait {remaining} seconds.")
+                return
+            dangerous_patterns = ["select * from","drop table","--","<?php","<iframe","<script","javascript:","union select","delete from",]
+            for bad in dangerous_patterns:
+                if bad.lower() in text.lower():
+                    st.error("❌ Dangerous input blocked")
+                    return
+            if current_time - st.session_state.last_msg_time < SPAM_MESSAGE_DELAY:
+                st.session_state.spam_count += 1
+                if st.session_state.spam_count >= MAX_SPAM_WARNINGS:
+                    st.session_state.spam_block_until = (current_time + SPAM_BLOCK_TIME)
+                    st.error("🚫 Spam detected. Wait 60 seconds.")
+                    return
+                st.error(f"⚠️ Please wait 3 seconds before sending another message ({st.session_state.spam_count}/5)")
+                return
+            st.session_state.spam_count = 0
+            st.session_state.last_msg_time = current_time
+            # 🔒 Prevent huge spam input
+            if len(text) > 4000:
+                st.error("❌ Message too long")
+                return
+            # 🔒 Block dangerous HTML/script
+            blocked_patterns = ["<script","</script>","javascript:","onerror=","onload="]
+            for pattern in blocked_patterns:
+                if pattern in text.lower():
+                    st.error("❌ Unsafe content detected")
+                    return
+            if text and text.strip():
+                st.session_state.last_activity = time.time()
+                remaining = MAX_CHAT_MESSAGES - len(st.session_state.chats[st.session_state.current_chat])
+                if remaining <= 10:
+                    st.warning(f"⚠ Only {remaining} messages left in this chat")
+                if len(st.session_state.chats[st.session_state.current_chat]) >= 120:
+                    st.error("❌ Chat limit reached. Create new chat.")
+                    return
+                # 🔥 RESET STOP BUTTON
+                st.session_state.stop_generation = False
+                # ✅ ADD USER MESSAGE
+                st.session_state.chats[st.session_state.current_chat].append(("You", text))
+                # ✅ ADD AI TYPING INSTANTLY
+                st.session_state.chats[st.session_state.current_chat].append(("AI", "Typing... ⏳"))
+                # ✅ SAVE USER MESSAGE
+                save_chat(st.session_state.email,st.session_state.current_chat,"You",text)
+                # ✅ CLEAR INPUT FAST
+                st.session_state[key] = ""
+                # ✅ INPUT KEY
+                st.session_state.input_key += 1
+                # 🔥 SHOW TYPING INSTANTLY FIRST
+                st.rerun()
+                # ================= MEMORY PROCESS BACKGROUND =================
+                threading.Thread(target=lambda: [smart_save_memory(st.session_state.email,mem)for mem in extract_memory_with_ai(text)if len(mem) >= 8],daemon=True).start()
+        st.text_area("💬 Ask anything...",key=f"user_input_{st.session_state.input_key}",height=70,placeholder="Type your message here...")
+        st.button("➤", on_click=handle_submit)
+        if st.button("⏹ Stop"):
+            st.session_state.stop_generation = True
+            st.warning("⛔ Generation stopped")
+    with col2:
+        if st.button("🎙"):
+            voice = listen()
+            st.session_state.last_activity = time.time()
+            if voice not in ["No voice detected","Microphone error","Sorry, I did not understand"]:
+                st.session_state.chats[st.session_state.current_chat].append(("You", voice))
+                save_chat(st.session_state.email,st.session_state.current_chat,"You",voice)
+                st.session_state.chats[st.session_state.current_chat].append(("AI", "Typing... ⏳"))
+                st.rerun()
+st.markdown("</div>", unsafe_allow_html=True)

@@ -1,0 +1,52 @@
+Package	                                        ઉપયોગ
+
+streamlit	                                    1. AI app nu web interface banava mate.
+                                                2. Buttons, chatbox, sidebar vagere banave.
+                                                
+SpeechRecognition	                            1. User no voice input levava mate.
+                                                2. Voice ne text ma convert karva mate.
+
+requests	                                    1. Internet/API request mokalva mate.
+                                                2. Ollama local API sathe connection mate.
+
+bcrypt	                                        1. Password ne secure hash karva mate.
+                                                2. Login time password verify karva mate.
+
+ddgs	                                        1. Internet par search karva mate.
+                                                2. Search na results AI sudhi lavva mate.
+
+pdfplumber	                                    1. PDF file mathi text read karva mate.
+                                                2. PDF na content par AI answer aapva mate.
+
+python-dotenv	                                1. .env file mathi secret values read kare.
+                                                2. API key/password jevi values code thi alag rakhe.
+
+streamlit-oauth	                                1. Google OAuth login mate.
+                                                2. User ne Google account thi login karva de.
+
+Pillow	                                        1. Image open/read karva mate.
+                                                2. Uploaded image ne process/verify karva mate.
+
+ollama	                                        1. Local AI models sathe kaam karva mate.
+                                                2. llava:latest jeva model ne call karva mate.
+
+pyperclip	                                    1. Text copy karva mate.
+                                                2. Clipboard sathe kaam kare.
+
+google-auth	                                    1. Google authentication handle kare.
+                                                2. Google login ni identity verify karva mate.
+
+google-generativeai	                            1. Gemini AI ne connect karva mate.
+                                                2. Gemini mathi AI answers melva mate.
+
+markdown	                                    1. AI na Markdown answer ne format karva mate.
+                                                2. Code/table/heading properly display karva mate.
+
+reportlab	                                    1. PDF generate karva mate.
+                                                2. AI/chat content ne PDF ma convert karva mate.
+
+pyttsx3	                                        1. AI text ne voice ma convert karva mate.
+                                                2. Computer mathi AI answer bolava mate.
+
+cryptography	                                1. Important data ne encrypt karva mate.
+                                                2. Chat/memory jeva sensitive data ne secure rakhva mate.
